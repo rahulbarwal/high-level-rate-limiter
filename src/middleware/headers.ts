@@ -18,5 +18,11 @@ export function setRateLimitHeaders(
   result: TokenBucketResult,
   config: TenantConfig,
 ): void {
-  throw new Error('not implemented');
+  res.set('X-RateLimit-Limit', String(config.burstSize));
+  res.set('X-RateLimit-Remaining', String(Math.max(0, Math.floor(result.tokensRemaining))));
+  res.set('X-RateLimit-Reset', String(Math.ceil(result.resetAtMs / 1000)));
+
+  if (!result.allowed) {
+    res.set('Retry-After', String(Math.ceil(1 / config.requestsPerSecond)));
+  }
 }
