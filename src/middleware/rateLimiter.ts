@@ -1,12 +1,25 @@
 import type { Request, RequestHandler } from 'express';
 import type { Redis } from 'ioredis';
+import { createLogger, transports, format } from 'winston';
 import type { ConfigCache } from '../config/configCache';
+import { ConfigStoreError } from '../config/types';
+import { checkAndConsume } from '../redis/tokenBucket';
+import { RedisUnavailableError } from '../redis/types';
+import { setRateLimitHeaders } from './headers';
 
 export interface RateLimiterDeps {
   cache: ConfigCache;
   redisClient: Redis;
   getTenantId?: (req: Request) => string | null;
 }
+
+const logger = createLogger({
+  format: format.json(),
+  transports: [new transports.Console()],
+});
+
+const defaultGetTenantId = (req: Request): string | null =>
+  (req.headers['x-tenant-id'] as string) || null;
 
 /**
  * Creates an Express middleware that enforces per-tenant token-bucket rate limits.
@@ -25,5 +38,83 @@ export interface RateLimiterDeps {
  *   - RedisUnavailableError      → 503 { error: 'service_unavailable' }
  */
 export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandler {
-  throw new Error('not implemented');
+  const { cache, redisClient, getTenantId = defaultGetTenantId } = deps;
+
+  return async (req, res, next) => {
+    const requestId = req.headers['x-request-id'] as string | undefined;
+    const timestamp = new Date().toISOString();
+
+    // a. Extract tenant ID
+    const tenantId = getTenantId(req);
+    if (!tenantId) {
+      res.status(400).json({ error: 'missing_tenant_id' });
+      return;
+    }
+
+    // b. Fetch tenant config
+    let config;
+    try {
+      config = await cache.getTenantConfig(tenantId);
+    } catch (err) {
+      if (err instanceof ConfigStoreError) {
+        logger.warn({
+          event: 'rate_limit_error',
+          tenant_id: tenantId,
+          reason: 'config_unavailable',
+          request_id: requestId,
+          timestamp,
+        });
+        res.status(503).json({ error: 'service_unavailable' });
+        return;
+      }
+      throw err;
+    }
+
+    // c. Bypass when rate limiting is disabled for this tenant
+    if (!config.enabled) {
+      next();
+      return;
+    }
+
+    // d. Check and consume a token
+    let result;
+    try {
+      result = await checkAndConsume(redisClient, tenantId, config, Date.now());
+    } catch (err) {
+      if (err instanceof RedisUnavailableError) {
+        logger.error({
+          event: 'rate_limit_error',
+          tenant_id: tenantId,
+          reason: 'redis_unavailable',
+          request_id: requestId,
+          timestamp,
+        });
+        res.status(503).json({ error: 'service_unavailable' });
+        return;
+      }
+      throw err;
+    }
+
+    // e. Set rate-limit headers on every response
+    setRateLimitHeaders(res, result, config);
+
+    // f. Allow
+    if (result.allowed) {
+      next();
+      return;
+    }
+
+    // g. Reject
+    logger.warn({
+      event: 'rate_limit_rejected',
+      tenant_id: tenantId,
+      result: 'rejected',
+      tokens_remaining: result.tokensRemaining,
+      limit: config.burstSize,
+      burst: config.burstSize,
+      request_id: requestId,
+      timestamp,
+    });
+    res.status(429).json({ error: 'rate_limit_exceeded' });
+  };
 }
