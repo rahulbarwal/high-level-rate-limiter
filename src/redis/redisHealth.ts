@@ -1,6 +1,16 @@
 import { Redis } from 'ioredis';
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function checkRedisHealth(_client: Redis): Promise<'ok' | 'unavailable'> {
-  throw new Error('not implemented');
+const HEALTH_TIMEOUT_MS = 2_000;
+
+export async function checkRedisHealth(client: Redis): Promise<'ok' | 'unavailable'> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('ping timeout')), HEALTH_TIMEOUT_MS),
+  );
+
+  try {
+    const response = await Promise.race([client.ping(), timeout]);
+    return response === 'PONG' ? 'ok' : 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
 }
