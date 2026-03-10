@@ -1,6 +1,7 @@
 import type { Redis } from 'ioredis';
 import { TenantConfig } from '../config/types';
-import { TokenBucketResult } from './types';
+import { TokenBucketResult, RedisUnavailableError } from './types';
+import { RATE_LIMIT_SCRIPT } from './luaScript';
 
 /**
  * Calls the token-bucket Lua script on Redis and returns a structured result.
@@ -20,5 +21,31 @@ export async function checkAndConsume(
   nowMs: number,
   cost?: number,
 ): Promise<TokenBucketResult> {
-  throw new Error('not implemented');
+  const key = `rl:${tenantId}`;
+  const effectiveCost = cost ?? 1;
+
+  let raw: unknown;
+  try {
+    raw = await client.eval(
+      RATE_LIMIT_SCRIPT,
+      1,
+      key,
+      String(config.requestsPerSecond),
+      String(config.burstSize),
+      String(nowMs),
+      String(effectiveCost),
+    );
+  } catch (err) {
+    throw new RedisUnavailableError(
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  const result = raw as [number, number, number, number];
+  const allowed = result[0] === 1;
+  const tokensRemaining = Math.max(0, Math.floor(result[1]));
+  const burstSize = result[2];
+  const resetAtMs = Math.ceil(nowMs + (config.burstSize / config.requestsPerSecond) * 1000);
+
+  return { allowed, tokensRemaining, burstSize, resetAtMs };
 }

@@ -14,4 +14,25 @@
  *   burstSize       — echoed back from ARGV[2]
  *   resetAtMs       — epoch ms when the bucket will be full again
  */
-export const RATE_LIMIT_SCRIPT = '';
+export const RATE_LIMIT_SCRIPT = `
+local key        = KEYS[1]
+local rate       = tonumber(ARGV[1])
+local burst      = tonumber(ARGV[2])
+local now        = tonumber(ARGV[3])
+local cost       = tonumber(ARGV[4])
+local data       = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens     = tonumber(data[1]) or burst
+local last       = tonumber(data[2]) or now
+local elapsed    = math.max(0, now - last)
+local refill     = (elapsed / 1000) * rate
+tokens           = math.min(burst, tokens + refill)
+if tokens >= cost then
+  tokens = tokens - cost
+  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+  redis.call('PEXPIRE', key, math.ceil((burst / rate) * 3000))
+  return 1
+else
+  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+  return 0
+end
+`;
