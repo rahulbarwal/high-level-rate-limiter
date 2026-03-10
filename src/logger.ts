@@ -15,19 +15,15 @@ export interface RejectionLogEntry {
   timestamp: string;
 }
 
-/**
- * Centralised winston logger for structured JSON output.
- * Stub: methods are present but the transport is not yet configured for production.
- */
 export const logger = createLogger({
-  format: format.json(),
+  level: process.env.LOG_LEVEL ?? 'info',
+  format: format.combine(format.timestamp(), format.json()),
   transports: [new transports.Console()],
 });
 
 /**
- * Emits a structured JSON log entry for a rate-limit rejection.
- * Stub: throws 'not implemented' until wired in Phase D.
+ * Emits a structured JSON log entry for a rate-limit rejection (PRD §9.2).
  */
-export function logRejection(_fields: RejectionLogEntry): void {
-  throw new Error('not implemented');
+export function logRejection(fields: RejectionLogEntry): void {
+  logger.warn(fields);
 }

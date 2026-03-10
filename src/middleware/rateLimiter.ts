@@ -1,6 +1,5 @@
 import type { Request, RequestHandler } from 'express';
 import type { Redis } from 'ioredis';
-import { createLogger, transports, format } from 'winston';
 import type { ConfigCache } from '../config/configCache';
 import { ConfigStoreError } from '../config/types';
 import { checkAndConsume } from '../redis/tokenBucket';
@@ -10,6 +9,7 @@ import {
   rateLimitRedisLatencyMs,
   rateLimitRedisUnavailableTotal,
 } from '../metrics/metrics';
+import { logger, logRejection } from '../logger';
 import { setRateLimitHeaders } from './headers';
 
 export interface RateLimiterDeps {
@@ -17,11 +17,6 @@ export interface RateLimiterDeps {
   redisClient: Redis;
   getTenantId?: (req: Request) => string | null;
 }
-
-const logger = createLogger({
-  format: format.json(),
-  transports: [new transports.Console()],
-});
 
 const defaultGetTenantId = (req: Request): string | null =>
   (req.headers['x-tenant-id'] as string) || null;
@@ -46,7 +41,7 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
   const { cache, redisClient, getTenantId = defaultGetTenantId } = deps;
 
   return async (req, res, next) => {
-    const requestId = req.headers['x-request-id'] as string | undefined;
+    const requestId = req.requestId ?? (req.headers['x-request-id'] as string | undefined) ?? '';
     const timestamp = new Date().toISOString();
 
     // a. Extract tenant ID
@@ -116,7 +111,7 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
 
     // g. Reject
     rateLimitRequestsTotal.inc({ tenant: tenantId, result: 'rejected' });
-    logger.warn({
+    logRejection({
       event: 'rate_limit_rejected',
       tenant_id: tenantId,
       result: 'rejected',

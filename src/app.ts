@@ -1,9 +1,11 @@
 import express, { Request, Response } from "express";
 import { collectMetrics, getMetricsContentType } from "./metrics/metrics";
+import { requestIdMiddleware } from "./middleware/requestId";
 
 export function createApp(): express.Application {
   const app = express();
 
+  app.use(requestIdMiddleware);
   app.use(express.json());
 
   app.get("/health", (_req: Request, res: Response) => {
