@@ -13,7 +13,8 @@
     "test:unit": "jest --selectProjects unit",
     "test:integration": "jest --selectProjects integration",
     "test:e2e": "playwright test",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "loadtest": "ts-node scripts/loadtest.ts"
   },
   "keywords": [],
   "author": "",
@@ -29,12 +30,14 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@types/autocannon": "^7.12.7",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.4.0",
     "@types/pg": "^8.18.0",
     "@types/supertest": "^7.2.0",
     "@types/uuid": "^10.0.0",
+    "autocannon": "^8.0.0",
     "eslint": "^10.0.3",
     "jest": "^30.3.0",
     "prettier": "^3.8.1",
