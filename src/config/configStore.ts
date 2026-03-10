@@ -1,6 +1,46 @@
-import { TenantConfig } from './types';
+import { Pool } from 'pg';
+import { TenantConfig, ConfigStoreError } from './types';
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+let _pool: Pool | null = null;
+
+function getPool(): Pool {
+  if (_pool === null) {
+    _pool = new Pool({ connectionString: process.env.DB_CONNECTION_STRING });
+  }
+  return _pool;
+}
+
+const SQL = `
+  SELECT tenant_id, requests_per_second, burst_size, enabled, updated_at
+  FROM   tenant_rate_limit_configs
+  WHERE  tenant_id = $1
+`;
+
 export async function getConfigFromDB(tenantId: string): Promise<TenantConfig | null> {
-  throw new Error('not implemented');
+  try {
+    const result = await getPool().query(SQL, [tenantId]);
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0] as {
+      tenant_id: string;
+      requests_per_second: number;
+      burst_size: number;
+      enabled: boolean;
+      updated_at: Date;
+    };
+
+    return {
+      tenantId: row.tenant_id,
+      requestsPerSecond: row.requests_per_second,
+      burstSize: row.burst_size,
+      enabled: row.enabled,
+      updatedAt: row.updated_at,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new ConfigStoreError(message);
+  }
 }
