@@ -4,6 +4,7 @@ export interface TenantConfig {
   burstSize: number;
   enabled: boolean;
   updatedAt: Date;
+  baselineRps?: number;
 }
 
 export class ConfigStoreError extends Error {
