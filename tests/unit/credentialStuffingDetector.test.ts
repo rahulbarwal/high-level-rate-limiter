@@ -98,12 +98,17 @@ describe('CredentialStuffingDetector', () => {
       const { detector, onSuspected } = makeDetector();
       const tenantId = 'tenant-low-rate';
 
-      // 51 auth errors out of 510 total → error_rate = 10% ≤ 20%
+      // 51 auth errors interleaved with 459 successes → error_rate ≈ 10% throughout.
+      // Errors are spread uniformly (1 error per 10 requests) so the rate never
+      // transiently exceeds 20%, keeping it consistently below the threshold.
       const authErrors = AUTH_ERROR_COUNT_THRESHOLD + 1; // 51
-      const total = authErrors / ERROR_RATE_THRESHOLD; // 255 → exactly 20%, use 256 for ≤ boundary
-
-      // 51 errors out of 510 = 10% — well below threshold
-      sendRequests(detector, tenantId, authErrors * 10, authErrors);
+      const successesPerError = 9; // 1 error + 9 successes = 10% rate per cycle
+      for (let i = 0; i < authErrors; i++) {
+        detector.record(tenantId, 401);
+        for (let j = 0; j < successesPerError; j++) {
+          detector.record(tenantId, 200);
+        }
+      }
 
       expect(onSuspected).not.toHaveBeenCalled();
     });
