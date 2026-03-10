@@ -5,6 +5,11 @@ import type { ConfigCache } from '../config/configCache';
 import { ConfigStoreError } from '../config/types';
 import { checkAndConsume } from '../redis/tokenBucket';
 import { RedisUnavailableError } from '../redis/types';
+import {
+  rateLimitRequestsTotal,
+  rateLimitRedisLatencyMs,
+  rateLimitRedisUnavailableTotal,
+} from '../metrics/metrics';
 import { setRateLimitHeaders } from './headers';
 
 export interface RateLimiterDeps {
@@ -76,12 +81,15 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
       return;
     }
 
-    // d. Check and consume a token
+    // d. Check and consume a token, measuring Redis latency
     let result;
+    const endTimer = rateLimitRedisLatencyMs.startTimer();
     try {
       result = await checkAndConsume(redisClient, tenantId, config, Date.now());
     } catch (err) {
+      endTimer();
       if (err instanceof RedisUnavailableError) {
+        rateLimitRedisUnavailableTotal.inc();
         logger.error({
           event: 'rate_limit_error',
           tenant_id: tenantId,
@@ -94,17 +102,20 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
       }
       throw err;
     }
+    endTimer();
 
     // e. Set rate-limit headers on every response
     setRateLimitHeaders(res, result, config);
 
     // f. Allow
     if (result.allowed) {
+      rateLimitRequestsTotal.inc({ tenant: tenantId, result: 'allowed' });
       next();
       return;
     }
 
     // g. Reject
+    rateLimitRequestsTotal.inc({ tenant: tenantId, result: 'rejected' });
     logger.warn({
       event: 'rate_limit_rejected',
       tenant_id: tenantId,
