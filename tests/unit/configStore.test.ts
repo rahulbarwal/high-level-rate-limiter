@@ -26,6 +26,7 @@ const makeRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
   burst_size: 200.0,
   enabled: true,
   updated_at: new Date('2024-01-15T10:00:00.000Z'),
+  tier: 3,
   ...overrides,
 });
 
@@ -64,6 +65,7 @@ describe('getConfigFromDB', () => {
         'burstSize',
         'enabled',
         'updatedAt',
+        'tier',
       ];
       expect(Object.keys(config).sort()).toEqual(expectedKeys.sort());
     });

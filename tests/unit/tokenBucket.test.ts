@@ -1,6 +1,6 @@
 import { checkAndConsume } from '../../src/redis/tokenBucket';
 import { RedisUnavailableError } from '../../src/redis/types';
-import { TenantConfig } from '../../src/config/types';
+import { TenantConfig, TierLevel } from '../../src/config/types';
 import type { Redis } from 'ioredis';
 
 // ---------------------------------------------------------------------------
@@ -13,6 +13,7 @@ const makeConfig = (overrides: Partial<TenantConfig> = {}): TenantConfig => ({
   burstSize: 20,
   enabled: true,
   updatedAt: new Date('2024-01-15T10:00:00.000Z'),
+  tier: TierLevel.FREE,
   ...overrides,
 });
 

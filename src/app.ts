@@ -6,11 +6,13 @@ import { createHealthRouter } from './routes/health';
 import { createRateLimiterMiddleware } from './middleware/rateLimiter';
 import type { ConfigCache } from './config/configCache';
 import type { SpikeDetector } from './abuse/spikeDetector';
+import type { GlobalLimiter } from './globalLimiter/globalLimiter';
 
 export interface AppDeps {
   redisClient: Redis;
   configCache: ConfigCache;
   spikeDetector?: SpikeDetector;
+  globalLimiter?: GlobalLimiter;
 }
 
 export function createApp(deps?: AppDeps): express.Application {
@@ -24,13 +26,15 @@ export function createApp(deps?: AppDeps): express.Application {
   //    are never subject to rate limiting
   app.use(createHealthRouter(deps?.redisClient));
 
-  // c. Per-tenant token-bucket rate limiter (only when fully wired)
+  // c. Per-tenant token-bucket rate limiter with optional global load shedding
+  //    (only when fully wired)
   if (deps) {
     app.use(
       createRateLimiterMiddleware({
         cache: deps.configCache,
         redisClient: deps.redisClient,
         spikeDetector: deps.spikeDetector,
+        globalLimiter: deps.globalLimiter,
       }),
     );
   }

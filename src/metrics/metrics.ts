@@ -35,6 +35,13 @@ export const abuseSpikeTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const globalLimitShedTotal = new Counter({
+  name: 'global_limit_shed_total',
+  help: 'Total number of requests shed by the global rate limit, labelled by tier',
+  labelNames: ['tier'] as const,
+  registers: [metricsRegistry],
+});
+
 export function getMetricsContentType(): string {
   return Registry.PROMETHEUS_CONTENT_TYPE;
 }

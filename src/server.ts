@@ -5,6 +5,7 @@ import { rateLimitConfigCacheMissTotal } from './metrics/metrics';
 import { createAbuseDetectors } from './abuse/index';
 import { createApp } from './app';
 import { logger } from './logger';
+import { GlobalLimiter, GLOBAL_LIMIT_RPS } from './globalLimiter/globalLimiter';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
@@ -17,7 +18,12 @@ const configCache = new ConfigCache({
 
 const { spikeDetector } = createAbuseDetectors();
 
-const app = createApp({ redisClient, configCache, spikeDetector });
+const globalLimiter = new GlobalLimiter({
+  globalLimitRps: GLOBAL_LIMIT_RPS,
+  redisClient,
+});
+
+const app = createApp({ redisClient, configCache, spikeDetector, globalLimiter });
 
 const redisMode = process.env.REDIS_SENTINELS ? 'sentinel' : 'standalone';
 

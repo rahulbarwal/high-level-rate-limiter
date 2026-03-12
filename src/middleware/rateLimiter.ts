@@ -8,16 +8,19 @@ import {
   rateLimitRequestsTotal,
   rateLimitRedisLatencyMs,
   rateLimitRedisUnavailableTotal,
+  globalLimitShedTotal,
 } from '../metrics/metrics';
 import { logger, logRejection } from '../logger';
 import { setRateLimitHeaders } from './headers';
 import type { SpikeDetector } from '../abuse/spikeDetector';
+import type { GlobalLimiter } from '../globalLimiter/globalLimiter';
 
 export interface RateLimiterDeps {
   cache: ConfigCache;
   redisClient: Redis;
   getTenantId?: (req: Request) => string | null;
   spikeDetector?: SpikeDetector;
+  globalLimiter?: GlobalLimiter;
 }
 
 const defaultGetTenantId = (req: Request): string | null =>
@@ -40,7 +43,7 @@ const defaultGetTenantId = (req: Request): string | null =>
  *   - RedisUnavailableError      → 503 { error: 'service_unavailable' }
  */
 export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandler {
-  const { cache, redisClient, getTenantId = defaultGetTenantId, spikeDetector } = deps;
+  const { cache, redisClient, getTenantId = defaultGetTenantId, spikeDetector, globalLimiter } = deps;
 
   return async (req, res, next) => {
     const requestId = req.requestId ?? (req.headers['x-request-id'] as string | undefined) ?? '';
@@ -78,7 +81,44 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
       return;
     }
 
-    // d. Check and consume a token, measuring Redis latency
+    // d. Global load shedding — check shared capacity before per-tenant bucket.
+    //    Tier 1 (ENTERPRISE) is never shed. Tiers 2, 3, 4 are shed in priority
+    //    order (4 first) when the global 50k RPS bucket is exhausted.
+    if (globalLimiter) {
+      let globalAllowed: boolean;
+      try {
+        globalAllowed = await globalLimiter.tryConsume(config.tier);
+      } catch (err) {
+        if (err instanceof RedisUnavailableError) {
+          rateLimitRedisUnavailableTotal.inc();
+          logger.error({
+            event: 'rate_limit_error',
+            tenant_id: tenantId,
+            reason: 'global_redis_unavailable',
+            request_id: requestId,
+            timestamp,
+          });
+          res.status(503).json({ error: 'service_unavailable' });
+          return;
+        }
+        throw err;
+      }
+
+      if (!globalAllowed) {
+        globalLimitShedTotal.inc({ tier: String(config.tier) });
+        logger.warn({
+          event: 'global_limit_shed',
+          tenant_id: tenantId,
+          tier: config.tier,
+          request_id: requestId,
+          timestamp,
+        });
+        res.status(429).json({ error: 'load_shed' });
+        return;
+      }
+    }
+
+    // e. Check and consume a token, measuring Redis latency
     let result;
     const endTimer = rateLimitRedisLatencyMs.startTimer();
     try {
@@ -101,10 +141,10 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
     }
     endTimer();
 
-    // e. Set rate-limit headers on every response
+    // f. Set rate-limit headers on every response
     setRateLimitHeaders(res, result, config);
 
-    // f. Allow
+    // g. Allow
     if (result.allowed) {
       rateLimitRequestsTotal.inc({ tenant: tenantId, result: 'allowed' });
       spikeDetector?.record(tenantId, true);
@@ -112,7 +152,7 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
       return;
     }
 
-    // g. Reject
+    // h. Reject
     rateLimitRequestsTotal.inc({ tenant: tenantId, result: 'rejected' });
     spikeDetector?.record(tenantId, false);
     logRejection({

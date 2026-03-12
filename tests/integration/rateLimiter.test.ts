@@ -2,7 +2,7 @@ import express, { type Application } from 'express';
 import request from 'supertest';
 import { createRateLimiterMiddleware } from '../../src/middleware/rateLimiter';
 import { ConfigCache } from '../../src/config/configCache';
-import { ConfigStoreError, type TenantConfig } from '../../src/config/types';
+import { ConfigStoreError, type TenantConfig, TierLevel } from '../../src/config/types';
 import { RedisUnavailableError, type TokenBucketResult } from '../../src/redis/types';
 import type { Redis } from 'ioredis';
 
@@ -29,6 +29,7 @@ const makeConfig = (overrides: Partial<TenantConfig> = {}): TenantConfig => ({
   burstSize: 100,
   enabled: true,
   updatedAt: new Date('2024-01-15T10:00:00.000Z'),
+  tier: TierLevel.FREE,
   ...overrides,
 });
 

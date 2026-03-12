@@ -1,6 +1,6 @@
 import { setRateLimitHeaders } from '../../src/middleware/headers';
 import type { TokenBucketResult } from '../../src/redis/types';
-import type { TenantConfig } from '../../src/config/types';
+import { type TenantConfig, TierLevel } from '../../src/config/types';
 import type { Response } from 'express';
 
 // ---------------------------------------------------------------------------
@@ -15,6 +15,7 @@ const makeConfig = (overrides: Partial<TenantConfig> = {}): TenantConfig => ({
   burstSize: 100,
   enabled: true,
   updatedAt: new Date('2024-01-15T10:00:00.000Z'),
+  tier: TierLevel.FREE,
   ...overrides,
 });
 

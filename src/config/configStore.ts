@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { TenantConfig, ConfigStoreError } from './types';
+import { TenantConfig, ConfigStoreError, TierLevel } from './types';
 
 let _pool: Pool | null = null;
 
@@ -11,7 +11,7 @@ function getPool(): Pool {
 }
 
 const SQL = `
-  SELECT tenant_id, requests_per_second, burst_size, enabled, updated_at
+  SELECT tenant_id, requests_per_second, burst_size, enabled, updated_at, tier
   FROM   tenant_rate_limit_configs
   WHERE  tenant_id = $1
 `;
@@ -30,6 +30,7 @@ export async function getConfigFromDB(tenantId: string): Promise<TenantConfig | 
       burst_size: number;
       enabled: boolean;
       updated_at: Date;
+      tier: number;
     };
 
     return {
@@ -38,6 +39,7 @@ export async function getConfigFromDB(tenantId: string): Promise<TenantConfig | 
       burstSize: row.burst_size,
       enabled: row.enabled,
       updatedAt: row.updated_at,
+      tier: (Number(row.tier) as TierLevel) || TierLevel.FREE,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

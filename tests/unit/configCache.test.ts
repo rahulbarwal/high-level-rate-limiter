@@ -1,5 +1,5 @@
 import { ConfigCache } from '../../src/config/configCache';
-import { TenantConfig, ConfigStoreError } from '../../src/config/types';
+import { TenantConfig, ConfigStoreError, TierLevel } from '../../src/config/types';
 
 // ---------------------------------------------------------------------------
 // Shared fixture
@@ -11,6 +11,7 @@ const makeConfig = (overrides: Partial<TenantConfig> = {}): TenantConfig => ({
   burstSize: 200,
   enabled: true,
   updatedAt: new Date('2024-01-15T10:00:00.000Z'),
+  tier: TierLevel.FREE,
   ...overrides,
 });
 

@@ -1,3 +1,7 @@
+import { TierLevel } from '../globalLimiter/types';
+
+export { TierLevel };
+
 export interface TenantConfig {
   tenantId: string;
   requestsPerSecond: number;
@@ -5,6 +9,7 @@ export interface TenantConfig {
   enabled: boolean;
   updatedAt: Date;
   baselineRps?: number;
+  tier: TierLevel;
 }
 
 export class ConfigStoreError extends Error {
