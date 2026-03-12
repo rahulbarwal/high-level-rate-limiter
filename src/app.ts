@@ -28,7 +28,13 @@ export function createApp(deps?: AppDeps): express.Application {
   //    are never subject to rate limiting
   app.use(createHealthRouter(deps?.redisClient));
 
-  // c. Per-tenant token-bucket rate limiter with optional global load shedding
+  // c. Prometheus metrics scrape endpoint — no tenant ID required
+  app.get('/metrics', async (_req: Request, res: Response) => {
+    res.set('Content-Type', getMetricsContentType());
+    res.end(await collectMetrics());
+  });
+
+  // d. Per-tenant token-bucket rate limiter with optional global load shedding
   //    (only when fully wired)
   if (deps) {
     app.use(
@@ -41,15 +47,9 @@ export function createApp(deps?: AppDeps): express.Application {
     );
   }
 
-  // d. Test route used by E2E and load tests
+  // e. Test route used by E2E and load tests
   app.get('/api/test', (_req: Request, res: Response) => {
     res.status(200).json({ message: 'ok' });
-  });
-
-  // e. Prometheus metrics scrape endpoint
-  app.get('/metrics', async (_req: Request, res: Response) => {
-    res.set('Content-Type', getMetricsContentType());
-    res.end(await collectMetrics());
   });
 
   return app;
