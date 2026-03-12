@@ -121,6 +121,78 @@ We have implemented token bucket implementation strategy using Redis for both pe
 
 The **token bucket algorithm** was chosen over alternatives such as **leaky bucket** and **sliding window rate limiting** primarily to avoid the additional memory overhead those approaches can introduce. Both leaky bucket and sliding window implementations often require maintaining request queues or detailed timestamp histories, which increases memory pressure and operational complexity at scale. In contrast, the token bucket model maintains only a small amount of state per tenant while still supporting burstable traffic, making it a more efficient and practical choice for this system.
 
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant A as Express App
+  participant RL as Rate Limiter Middleware
+  participant CC as Config Cache
+  participant DB as PostgreSQL
+  participant GL as Global Limiter
+  participant R as Redis
+  participant D as Abuse Detectors
+  participant H as Final Route Handler
+
+  C->>A: HTTP request + X-Tenant-ID
+  A->>A: requestId + requestLogger + json parser
+  A->>RL: protected route enters limiter
+
+  RL->>RL: Extract tenantId from X-Tenant-ID
+  alt Missing tenant ID
+    RL-->>C: 400 missing_tenant_id
+  else Tenant ID present
+    RL->>CC: getTenantConfig(tenantId)
+    alt Cache miss / expired
+      CC->>DB: Load tenant config
+      DB-->>CC: Tenant config
+      CC-->>RL: Config
+    else Cache hit
+      CC-->>RL: Config
+    end
+
+    alt Config unavailable and no stale cache
+      RL-->>C: 503 service_unavailable
+    else Config found
+      alt Tenant limiter disabled
+        RL->>H: next()
+        H-->>C: Normal response
+      else Limiter enabled
+        opt Global load shedding enabled
+          RL->>GL: tryConsume(config.tier)
+          alt Tier is enterprise
+            GL-->>RL: allow
+          else Non-enterprise
+            GL->>R: Consume from rl:__global__
+            R-->>GL: allowed / rejected
+            GL-->>RL: allowed / rejected
+          end
+
+          alt Globally shed
+            RL-->>C: 429 load_shed
+          end
+        end
+
+        RL->>R: checkAndConsume(rl:{tenantId})
+        R-->>RL: allowed, tokensRemaining, resetAt
+        RL->>RL: Set X-RateLimit-* headers
+
+        alt Token available
+          RL->>D: record(tenantId, 200)
+          RL->>H: next()
+          H-->>C: 200 response
+        else No token available
+          RL->>D: record(tenantId, 429)
+          RL-->>C: 429 rate_limit_exceeded + Retry-After
+        end
+      end
+    end
+  end
+
+```
+
 # Multi-region Considerations
 
 The current design looks single-region-first because both per-tenant and global counters depend on a shared Redis view.
