@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+# Tooling image for load tests and unit/integration tests (runs in Docker)
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src ./src
+COPY scripts ./scripts
+COPY tests ./tests
+COPY jest.config.ts ./
+COPY db ./db

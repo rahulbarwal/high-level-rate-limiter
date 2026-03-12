@@ -1,0 +1,92 @@
+# =============================================================================
+# High-Level Rate Limiter — Docker Compose
+#
+# Usage:
+#   docker compose up -d              # Start all services in background
+#   docker compose up --build         # Rebuild and start
+#   docker compose down -v            # Stop and remove volumes
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      REDIS_URL: redis://redis:6379
+      DB_CONNECTION_STRING: postgresql://postgres:postgres@postgres:5432/ratelimiter
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - ratelimiter-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - ratelimiter-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ratelimiter-network
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ratelimiter
+    volumes:
+      - ratelimiter-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ratelimiter"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ratelimiter-network
+
+  loadtest:
+    build:
+      context: .
+      dockerfile: Dockerfile.tooling
+    environment:
+      TARGET_URL: http://app:3000/api/test
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - ratelimiter-network
+    profiles:
+      - loadtest
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.tooling
+    command: ["npm", "test"]
+    networks:
+      - ratelimiter-network
+    profiles:
+      - test
+
+networks:
+  ratelimiter-network:
+    driver: bridge
+    name: ratelimiter-network
+
+volumes:
+  ratelimiter-redis-data:
+    name: ratelimiter-redis-data
+  ratelimiter-postgres-data:
+    name: ratelimiter-postgres-data
