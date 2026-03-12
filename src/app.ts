@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import type { Redis } from 'ioredis';
 import { collectMetrics, getMetricsContentType } from './metrics/metrics';
 import { requestIdMiddleware } from './middleware/requestId';
+import { requestLoggerMiddleware } from './middleware/requestLogger';
 import { createHealthRouter } from './routes/health';
 import { createRateLimiterMiddleware } from './middleware/rateLimiter';
 import type { ConfigCache } from './config/configCache';
@@ -20,6 +21,7 @@ export function createApp(deps?: AppDeps): express.Application {
 
   // a. Attach a request ID to every request before anything else touches it
   app.use(requestIdMiddleware);
+  app.use(requestLoggerMiddleware);
   app.use(express.json());
 
   // b. Health and readiness probes — mounted before the rate limiter so they
