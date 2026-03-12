@@ -1,3 +1,5 @@
+import type { AbuseDetector } from './types';
+
 export type CredentialStuffingEvent = {
   tenantId: string;
   errorRate: number;
@@ -19,7 +21,7 @@ const AUTH_ERROR_CODES = new Set([401, 403]);
 const ERROR_RATE_THRESHOLD = 0.2;
 const AUTH_ERROR_COUNT_THRESHOLD = 50;
 
-export class CredentialStuffingDetector {
+export class CredentialStuffingDetector implements AbuseDetector {
   private readonly onSuspected: (event: CredentialStuffingEvent) => void;
   private readonly windows = new Map<string, StatusEntry[]>();
   // Tracks whether onSuspected has already fired for the current window state.
@@ -30,7 +32,7 @@ export class CredentialStuffingDetector {
     this.onSuspected = options.onSuspected;
   }
 
-  record(tenantId: string, statusCode: number): void {
+  record(tenantId: string, statusCode: number, _context?: unknown): void {
     const now = Date.now();
 
     let entries = this.windows.get(tenantId);

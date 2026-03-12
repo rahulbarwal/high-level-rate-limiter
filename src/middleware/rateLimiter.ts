@@ -12,14 +12,14 @@ import {
 } from '../metrics/metrics';
 import { logger, logRejection } from '../logger';
 import { setRateLimitHeaders } from './headers';
-import type { SpikeDetector } from '../abuse/spikeDetector';
+import type { AbuseDetector } from '../abuse/types';
 import type { GlobalLimiter } from '../globalLimiter/globalLimiter';
 
 export interface RateLimiterDeps {
   cache: ConfigCache;
   redisClient: Redis;
   getTenantId?: (req: Request) => string | null;
-  spikeDetector?: SpikeDetector;
+  detectors?: AbuseDetector[];
   globalLimiter?: GlobalLimiter;
 }
 
@@ -43,7 +43,7 @@ const defaultGetTenantId = (req: Request): string | null =>
  *   - RedisUnavailableError      → 503 { error: 'service_unavailable' }
  */
 export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandler {
-  const { cache, redisClient, getTenantId = defaultGetTenantId, spikeDetector, globalLimiter } = deps;
+  const { cache, redisClient, getTenantId = defaultGetTenantId, detectors = [], globalLimiter } = deps;
 
   return async (req, res, next) => {
     const requestId = req.requestId ?? (req.headers['x-request-id'] as string | undefined) ?? '';
@@ -147,14 +147,18 @@ export function createRateLimiterMiddleware(deps: RateLimiterDeps): RequestHandl
     // g. Allow
     if (result.allowed) {
       rateLimitRequestsTotal.inc({ tenant: tenantId, result: 'allowed' });
-      spikeDetector?.record(tenantId, true);
+      for (const d of detectors) {
+        d.record(tenantId, 200);
+      }
       next();
       return;
     }
 
     // h. Reject
     rateLimitRequestsTotal.inc({ tenant: tenantId, result: 'rejected' });
-    spikeDetector?.record(tenantId, false);
+    for (const d of detectors) {
+      d.record(tenantId, 429);
+    }
     logRejection({
       event: 'rate_limit_rejected',
       tenant_id: tenantId,

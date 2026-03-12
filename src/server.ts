@@ -16,14 +16,22 @@ const configCache = new ConfigCache({
   onCacheMiss: () => rateLimitConfigCacheMissTotal.inc(),
 });
 
-const { spikeDetector } = createAbuseDetectors();
+const { detectors, emitter } = createAbuseDetectors();
+
+emitter.on('SPIKE_DETECTED', (event) => {
+  logger.warn({ event: 'spike_detected', ...event });
+});
+
+emitter.on('CREDENTIAL_STUFFING_SUSPECTED', (event) => {
+  logger.warn({ event: 'credential_stuffing_suspected', ...event });
+});
 
 const globalLimiter = new GlobalLimiter({
   globalLimitRps: GLOBAL_LIMIT_RPS,
   redisClient,
 });
 
-const app = createApp({ redisClient, configCache, spikeDetector, globalLimiter });
+const app = createApp({ redisClient, configCache, detectors, globalLimiter });
 
 const redisMode = process.env.REDIS_SENTINELS ? 'sentinel' : 'standalone';
 

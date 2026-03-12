@@ -6,13 +6,13 @@ import { requestLoggerMiddleware } from './middleware/requestLogger';
 import { createHealthRouter } from './routes/health';
 import { createRateLimiterMiddleware } from './middleware/rateLimiter';
 import type { ConfigCache } from './config/configCache';
-import type { SpikeDetector } from './abuse/spikeDetector';
+import type { AbuseDetector } from './abuse/types';
 import type { GlobalLimiter } from './globalLimiter/globalLimiter';
 
 export interface AppDeps {
   redisClient: Redis;
   configCache: ConfigCache;
-  spikeDetector?: SpikeDetector;
+  detectors?: AbuseDetector[];
   globalLimiter?: GlobalLimiter;
 }
 
@@ -41,7 +41,7 @@ export function createApp(deps?: AppDeps): express.Application {
       createRateLimiterMiddleware({
         cache: deps.configCache,
         redisClient: deps.redisClient,
-        spikeDetector: deps.spikeDetector,
+        detectors: deps.detectors,
         globalLimiter: deps.globalLimiter,
       }),
     );

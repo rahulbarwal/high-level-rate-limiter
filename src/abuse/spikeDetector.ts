@@ -1,3 +1,5 @@
+import type { AbuseDetector } from './types';
+
 export type SpikeEvent = {
   tenantId: string;
   rejectionRate: number;
@@ -23,7 +25,7 @@ interface RequestEntry {
 const WINDOW_MS = 60_000;
 const DEFAULT_BASELINE_RPS = 10;
 
-export class SpikeDetector {
+export class SpikeDetector implements AbuseDetector {
   private readonly onSpike: (event: SpikeEvent) => void;
   private readonly baseline: number;
   private readonly metrics?: SpikeDetectorOptions['metrics'];
@@ -35,7 +37,8 @@ export class SpikeDetector {
     this.metrics = options.metrics;
   }
 
-  record(tenantId: string, allowed: boolean): void {
+  record(tenantId: string, statusCode: number, _context?: unknown): void {
+    const allowed = statusCode < 400;
     const now = Date.now();
 
     let entries = this.windows.get(tenantId);

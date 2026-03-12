@@ -1,7 +1,3 @@
-// Wire-up guide for auth middleware:
-// Call credentialStuffingDetector.record(tenantId, res.statusCode) in auth middleware
-// after the response status is determined.
-
 import { EventEmitter } from 'events';
 
 export { SpikeDetector } from './spikeDetector';
@@ -13,14 +9,16 @@ export type {
   CredentialStuffingDetectorOptions,
 } from './credentialStuffingDetector';
 
+export type { AbuseDetector } from './types';
+
 import { SpikeDetector } from './spikeDetector';
 import type { SpikeEvent } from './spikeDetector';
 import { CredentialStuffingDetector } from './credentialStuffingDetector';
 import type { CredentialStuffingEvent } from './credentialStuffingDetector';
+import type { AbuseDetector } from './types';
 
 export interface AbuseDetectors {
-  spikeDetector: SpikeDetector;
-  credentialStuffingDetector: CredentialStuffingDetector;
+  detectors: AbuseDetector[];
   emitter: EventEmitter;
 }
 
@@ -39,5 +37,8 @@ export function createAbuseDetectors(): AbuseDetectors {
     },
   });
 
-  return { spikeDetector, credentialStuffingDetector, emitter };
+  return {
+    detectors: [spikeDetector, credentialStuffingDetector],
+    emitter,
+  };
 }
