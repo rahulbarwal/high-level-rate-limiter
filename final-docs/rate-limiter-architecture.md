@@ -74,38 +74,7 @@ Many more abuse detection strategies can be added easily by extending `AbuseDete
 
 # Architecture
 
-```mermaid
-graph TD
-    A[Incoming Request]
-    B[Extract Tenant ID]
-    C[Load Tenant Config]
-    D[Check Global Capacity]
-    E[Check Tenant Bucket]
-    F[Forward to API]
-    G[429 Rate Limited]
-    H[429 Load Shed]
-    I[503 Service Unavailable]
-    J[PostgreSQL - Tenant Configs]
-    K[Redis - Global Bucket]
-    L[Redis - Tenant Buckets]
-
-    A --> B
-    B --> C
-    C -- Read config --> J
-    C -- Config missing or unavailable --> I
-    C -- Rate limiting disabled --> F
-    C -- Rate limiting enabled --> D
-
-    D -- Check shared capacity --> K
-    D -- No global capacity --> H
-    D -- Redis unavailable --> I
-    D -- Allowed --> E
-
-    E -- Consume tenant token --> L
-    E -- Token available --> F
-    E -- Token exhausted --> G
-    E -- Redis unavailable --> I
-```
+![Current Architecture](./architecture.png)
 
 We have implemented token bucket implementation strategy using Redis for both per tenant config and global rate limiting as well.Main reason for choosing this was to handle bursty traffic well enough and not add unnecessary memory pressure to the app servers. This is the best default for this service:
 
