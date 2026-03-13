@@ -10,12 +10,12 @@ This document is a postmortem for a high-severity production incident on the rat
 
 **Key signals:**
 
-| Signal                | Baseline | Peak                 |
-| :-------------------- | :------- | :------------------- |
-| P99 latency           | 150 ms   | 4,500 ms             |
-| Pod CPU (6 pods)      | ~30%     | ~92%                 |
-| DB write queue depth  | ~0       | ~14,000 pending rows |
-| Downstream retry rate | nominal  | 40× normal           |
+| Signal                | Baseline | Peak              |
+| :-------------------- | :------- | :---------------- |
+| P99 latency           | 150 ms   | 4.5 s             |
+| Pod CPU (6 pods)      | ~30%     | ~92%              |
+| DB write queue depth  | ~0       | ~14k pending rows |
+| Downstream retry rate | nominal  | 40× normal        |
 
 A new feature was deployed 3 hours before the incident began.
 
@@ -23,7 +23,11 @@ A new feature was deployed 3 hours before the incident began.
 
 ## T+0:00 — Deployment (3 hours before detection)
 
-A new feature shipped that altered how tenant configs are persisted. The migration added a background writer that issued one `UPDATE` to `tenant_rate_limit_configs` per request on certain high-traffic routes. The intent was to track `last_seen_at` per tenant. No load test was run against the new write path.
+A new feature was deployed that records last_seen_at for tenants.
+
+The implementation introduced an UPDATE tenant_rate_limit_configs executed for each allowed request on certain high-traffic routes.
+
+This write path was not load tested.
 
 ## T+3:00 — First signal
 
@@ -31,31 +35,32 @@ A new feature shipped that altered how tenant configs are persisted. The migrati
 
 ## T+3:07 — Alert fires
 
-- `P99 latency > 2 s` for 5 consecutive minutes — page sent.
+Two alerts fired:
 
-- `Pod CPU > 85%` on 6 pods — secondary alert.
+- P99 latency > 2 s for 5 minutes
+- Pod CPU > 85%
 
-- Incident acknowledged within 3 minutes.
+The incident was acknowledged within a few minutes.
 
 ## T+3:10 — Degradation accelerates
 
 - Latency climbed from 700 ms → 4,500 ms P99.
 
 - `ratelimit_redis_unavailable_total` began incrementing — Redis was still reachable but responding slowly because the app pods were saturating their connection pool.
-
-- `ConfigCache` TTL (60 s) meant that every tenant whose cache entry expired triggered a fresh `SELECT` against PostgreSQL. With 10k+ tenants and a 60-second TTL, cache misses were arriving at ~167/s under normal conditions. Under degraded conditions, the miss rate spiked because pods were restarting and losing their in-process cache.
+- At the same time PostgreSQL write queue depth started increasing steadily.
 
 - The new background writer was issuing concurrent `UPDATE` statements on the same `tenant_rate_limit_configs` table, creating write–read contention and growing the write queue.
 
 ## T+3:22 — Investigation begins
 
+- Initial suspicion was Redis degradation because the Redis latency metric was the first signal.
+  However Redis CPU and memory looked normal.
 - Infrastructure health checked — no node-level failure found.
 
 - Database read latency stable; write queue depth and lock wait time both increasing.
-
-- Application traces showed the new `last_seen_at` writer executing inside the hot request path on every allowed request.
-
-- `ratelimit_config_cache_miss_total` counter showed a 6× spike in cache misses, confirming pods had lost warm caches.
+  - Tracing showed something unexpected: the new last_seen_at writer was executing inside the request path for every allowed request.
+  - `ratelimit_config_cache_miss_total` counter showed a 6× spike in cache misses, confirming pods had lost warm caches.
+  - With ~10k tenants and a short TTL, this already produced a steady stream of reads. Once pods restarted and lost warm caches, that read pressure increased significantly.
 
 - Retry telemetry from the downstream service showed it was retrying `503 service_unavailable` responses with no backoff — the downstream client had a fixed 100 ms retry interval and no retry budget.
 
@@ -63,22 +68,21 @@ A new feature shipped that altered how tenant configs are persisted. The migrati
 
 ## T+3:46 — Mitigation begins
 
-- New `last_seen_at` writer disabled via feature flag.
+Mitigation steps were taken:
 
-- Downstream service retry interval temporarily increased to 5 s with a 3-attempt cap.
+1. The last_seen_at writer was disabled via feature flag.
+2. Downstream client retry interval was increased from 100 ms to 5 s with a retry cap.
+3. ConfigCache TTL was temporarily increased to reduce database reads.
 
-- `ConfigCache` TTL extended to 300 s to reduce PostgreSQL read pressure during recovery.
-
-- DB write queue depth began falling within 8 minutes.
+Within several minutes the database write queue began draining.
 
 ## T+4:05 — Recovery
 
+System metrics gradually returned to normal:
+
 - P99 latency returned below 200 ms.
-
 - Pod CPU normalised across all 6 pods.
-
-- `ratelimit_redis_unavailable_total` stopped incrementing.
-
+- Redis latency normalizedrementing.
 - Downstream retry rate returned to baseline.
 
 ---
@@ -89,31 +93,25 @@ A new feature shipped that altered how tenant configs are persisted. The migrati
 
 The new feature inserted a synchronous `UPDATE` to `tenant_rate_limit_configs` inside `createRateLimiterMiddleware` on every allowed request. This is the highest-frequency path in the system — every single request that passes the token-bucket check triggers it.
 
-At 10k+ tenants and realistic traffic volumes, this translated to thousands of concurrent writes per second against a single PostgreSQL table. The table is also the source of truth for `ConfigCache.getTenantConfig()`, which issues `SELECT` queries against the same table on every cache miss. Write–read lock contention caused `SELECT` latency to increase, which in turn caused `getTenantConfig()` to block, which held the async event loop on each pod longer, which drove up CPU and reduced throughput.
+At 10k+ tenants and realistic traffic volumes, this translated to thousands of concurrent writes per second against a single PostgreSQL table.
 
-## Contributing Factor 1 — Cache miss amplification
+- The table is also the source of truth for `ConfigCache.getTenantConfig()`, which issues `SELECT` queries against the same table on every cache miss.
+- Under load, write pressure caused lock contention and increasing latency for reads.
+- Those slower reads delayed request handling in the application layer, increasing event loop pressure and CPU usage.
 
-`ConfigCache` is an in-process `Map` with a 60-second TTL (`DEFAULT_TTL_SECONDS = 60`). When pods restart or when the TTL expires under high load, every miss issues a live `SELECT` to PostgreSQL. With 10k tenants and a 60-second TTL, steady-state miss rate is ~167/s. When 6 pods lost their warm caches simultaneously (due to restarts triggered by OOM from the write pressure), the miss rate multiplied by 6 and hit PostgreSQL at ~1,000 SELECT/s concurrently with the new write storm — a classic cache stampede.
+## Contributing factors
 
-The `ConfigCache` does have a stale fallback:
+## 1.Cache miss amplification
 
-```text
-} catch (err) {
-      // Stale fallback: if a previous entry exists, return it rather than
-      // propagating the error — the DB may be temporarily unavailable.
-      if (entry !== undefined) {
-        console.warn(
-          `[ConfigCache] Failed to refresh config for "${tenantId}", serving stale entry. Error: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        return entry.config;
-      }
-```
+Tenant configs are cached in memory with a TTL of 60 seconds.Under normal conditions cache misses generate a manageable amount of database traffic.
+
+However when pods restarted during the incident they lost their caches and began issuing fresh SELECT queries.
+
+The `ConfigCache` does have a stale fallback, however, multiple pods warming their caches simultaneously caused a burst of database reads. Pods that had restarted also had no stale cache entry to fall back on, which resulted in 503 responses when config retrieval failed.
 
 However, pods that had restarted had no stale entry to fall back on, so they threw `ConfigStoreError` and returned `503`, which fed the retry storm.
 
-## Contributing Factor 2 — Downstream retry storm
+### 2. Downstream retry storm
 
 The downstream service retried every `503 service_unavailable` at a fixed 100 ms interval. The rate limiter returns `503` on both `ConfigStoreError` and `RedisUnavailableError`:
 
@@ -138,13 +136,21 @@ try {
 
 With no backoff and no retry budget, each `503` immediately generated a retry, which hit the already-saturated system again. This amplified load by approximately 40× at peak.
 
-## Contributing Factor 3 — Global bucket contention under load
+### 3. Global bucket contention under load
 
-The `GlobalLimiter` uses the same Redis instance and the same Lua script as per-tenant buckets, keyed at `rl:__global__`. Under normal conditions this is fine. Under the degraded Redis connection pool (caused by the write storm consuming pg connections and slowing event loop turns), the global bucket eval calls queued behind per-tenant evals, adding further latency to every non-enterprise request.
+The GlobalLimiter and per-tenant token buckets share the same Redis client.
 
-## Contributing Factor 4 — SpikeDetector did not trigger early enough
+Under heavy application load Redis calls queued behind each other, adding additional latency to every request.
 
-`SpikeDetector` fires when `rejectionRate > 0.5 && total > 2 * baseline`. During this incident, the primary failure mode was `503` (not `429`), and `503` responses are not recorded by the detector — it only receives status codes passed explicitly by the middleware (`200` on allow, `429` on reject). The `503` path returns before the `d.record()` call:
+While Redis itself was healthy, the client pool in the application became saturated.
+
+### 4. SpikeDetector did not trigger early enough
+
+SpikeDetector triggers based on rejection rate (429 responses).
+
+During this incident the dominant failure mode was 503, which the detectors never recorded.
+
+Because of this the abuse detection pipeline produced no early signal. The `503` path returns before the `d.record()` call:
 
 ```text
 try {
