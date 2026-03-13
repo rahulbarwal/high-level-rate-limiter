@@ -69,11 +69,110 @@ Many more abuse detection strategies can be added easily by extending `AbuseDete
 
 ![Current Architecture](./architecture.png)
 
-## Algorithm selection
+## Key components
 
-Below is a **clean merged version** that adds short explanations of **Sliding Window and Leaky Bucket**, highlights their strengths, and keeps your justification for choosing **Token Bucket** intact.
+### Redis
+
+Redis is the real-time enforcement store for this system. It serves two distinct roles:
+
+**Per-tenant token buckets**
+
+Every tenant has a key in Redis under `rl:{tenantId}`. The key is a hash with two fields: `tokens` (current credit balance) and `last_refill` (epoch milliseconds of the last access). On every request, an atomic Lua script runs inside Redis to refill tokens based on elapsed time, consume one token, and return the admission decision — all in a single round-trip. Because the script is atomic, multiple horizontally scaled app instances share the same bucket without race conditions.
+
+The key is given a TTL of `(burstSize / requestsPerSecond) * 3` seconds. After a period of inactivity the key expires automatically, so the next request gets a fresh full bucket rather than a stuck exhausted one.
+
+**Global load-shedding bucket**
+
+A second key, `rl:__global__`, holds the platform-wide 50,000 RPS cap. The same Lua script is reused for this bucket, keyed under the synthetic tenant ID `__global__`. Enterprise tenants bypass this check entirely; all other tiers consume from it and are shed in priority order when it is exhausted. Because this key lives in Redis, the cap is effective across all app instances simultaneously.
+
+**Deployment modes**
+
+The Redis client (`src/redis/redisClient.ts`) supports both standalone and Sentinel modes. Sentinel mode is selected at startup when the `REDIS_SENTINELS` environment variable is present, providing automatic failover without application changes. Both modes use an exponential retry strategy capped at 30 seconds.
 
 ---
+
+### PostgreSQL
+
+PostgreSQL is the source of truth for tenant configuration. The `tenant_rate_limit_configs` table stores `tenant_id`, `requests_per_second`, `burst_size`, `enabled`, `tier`, and `updated_at` for each tenant. The query in `src/config/configStore.ts` is a simple parameterised `SELECT` by `tenant_id`.
+
+PostgreSQL is not on the hot path of request admission. It is only consulted when the in-memory cache misses or expires, which by default happens at most once per tenant per 60 seconds. This means a PostgreSQL outage does not immediately affect traffic — the cache continues serving stale config until it is restored.
+
+---
+
+### In-memory config cache (`ConfigCache`)
+
+`ConfigCache` (`src/config/configCache.ts`) is an in-process `Map` that sits in front of PostgreSQL. Its default TTL is 60 seconds. On every request the middleware calls `getTenantConfig(tenantId)`, which resolves from the map if the entry is fresh.
+
+**Stale-while-revalidate on error**
+
+If a cache entry has expired and the PostgreSQL fetch fails, `ConfigCache` falls back to the stale entry rather than propagating the error. This means a transient database outage does not cause a 503 storm — tenants continue operating under their last known configuration until the database recovers.
+
+**Thunder herd problem**
+
+The current cache implementation does not deduplicate concurrent misses for the same tenant. If a cache entry expires and many requests arrive simultaneously, each one independently queries PostgreSQL. At high concurrency this can produce a burst of identical queries — the classic thunder herd.
+
+The recommended fix is a per-key in-flight promise (sometimes called a single-flight or request coalescing pattern):
+
+```typescript
+private readonly inflight = new Map<string, Promise<TenantConfig>>();
+
+async getTenantConfig(tenantId: string): Promise<TenantConfig> {
+  const entry = this.store.get(tenantId);
+  if (entry && Date.now() - entry.fetchedAt < this.ttlMs) {
+    return entry.config;
+  }
+
+  // Coalesce: reuse an in-flight fetch if one is already running for this tenant
+  const existing = this.inflight.get(tenantId);
+  if (existing) return existing;
+
+  const fetch = this.getConfig(tenantId)
+    .then((fresh) => { /* store and return */ })
+    .finally(() => this.inflight.delete(tenantId));
+
+  this.inflight.set(tenantId, fetch);
+  return fetch;
+}
+```
+
+With this pattern, N concurrent misses for the same tenant result in exactly one PostgreSQL query. All waiters share the same promise and receive the result together.
+
+**Request coalescing near expiry**
+
+A related problem is probabilistic early expiry (also called cache stampede). When a cache entry is about to expire, the first request past the TTL boundary triggers a synchronous database fetch while all subsequent requests also miss and pile up. Two complementary approaches address this:
+
+- Early probabilistic refresh: before the TTL expires, a small random fraction of requests trigger a background refresh. The current request is still served from cache; the refresh happens asynchronously. This spreads the refresh load over time rather than concentrating it at the exact expiry moment.
+- Background refresh with stale serving: always serve the stale entry immediately and kick off a background refresh. The entry is never "expired" from the perspective of the caller — it is only marked as needing refresh. This eliminates the miss window entirely at the cost of briefly serving slightly stale config.
+
+Either approach pairs well with the in-flight coalescing fix above.
+
+---
+
+### Abuse detectors
+
+The abuse detection layer (`src/abuse/`) runs alongside request admission but does not block it. All detectors implement the `AbuseDetector` interface (`src/abuse/types.ts`):
+
+```typescript
+interface AbuseDetector {
+  record(tenantId: string, statusCode: number, context?: unknown): void;
+}
+```
+
+After each admission decision, the rate-limiter middleware iterates over every registered detector and calls `record(tenantId, statusCode)`. Detectors are free to interpret the status code and optional context in whatever way suits their detection logic. This means adding a new detector requires only implementing the interface and appending the instance to the array returned by `createAbuseDetectors`.
+
+**`SpikeDetector`**
+
+Maintains a 60-second sliding window of request outcomes per tenant. It derives `allowed` from `statusCode < 400`. When the rejection rate exceeds 50% and total volume exceeds twice the baseline, it fires a `SPIKE_DETECTED` event on the shared `EventEmitter`. This catches sudden traffic floods or broken integrations that are already hammering the rate limit.
+
+**`CredentialStuffingDetector`**
+
+Maintains a 5-minute sliding window of response status codes per tenant. It watches specifically for `401` and `403` responses. When the auth-error rate exceeds 20% and the raw error count exceeds 50, it fires a `CREDENTIAL_STUFFING_SUSPECTED` event. This catches slow-burn login-abuse patterns that stay under per-second volume limits but produce a distinctive failure profile.
+
+Both events are subscribed to in `src/server.ts` and logged as structured warnings via Winston. Because detectors are best-effort and run after the response decision is made, a detector failure cannot affect admission control.
+
+---
+
+## Algorithm selection
 
 Three algorithms were considered for implementation: **Sliding Window**, **Token Bucket**, and **Leaky Bucket**.
 
